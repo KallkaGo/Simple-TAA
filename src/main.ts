@@ -104,8 +104,6 @@ const animate = (): void => {
     ui.fpsEl.textContent = String(fps);
   }
 
-  ui.frameCountEl.textContent = String(taaPass.frame);
-
   if (autoRotate) {
     const t = now * 0.001;
     group.rotation.y += 0.005;

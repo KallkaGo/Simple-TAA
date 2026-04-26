@@ -13,7 +13,6 @@ export interface TaaUiElements {
   resetHistory: HTMLButtonElement;
   toggleRotate: HTMLButtonElement;
   fpsEl: HTMLSpanElement;
-  frameCountEl: HTMLSpanElement;
 }
 
 function getElement<T extends HTMLElement>(root: ParentNode, id: string): T {
@@ -57,7 +56,6 @@ export function mountTaaUi(root: HTMLElement): TaaUiElements {
 
       <div id="info">
         <div>FPS: <span id="fps">0</span></div>
-        <div>Frame: <span id="frameCount">0</span></div>
       </div>
     `,
     root,
@@ -76,6 +74,5 @@ export function mountTaaUi(root: HTMLElement): TaaUiElements {
     resetHistory: getElement<HTMLButtonElement>(root, 'resetHistory'),
     toggleRotate: getElement<HTMLButtonElement>(root, 'toggleRotate'),
     fpsEl: getElement<HTMLSpanElement>(root, 'fps'),
-    frameCountEl: getElement<HTMLSpanElement>(root, 'frameCount'),
   };
 }
