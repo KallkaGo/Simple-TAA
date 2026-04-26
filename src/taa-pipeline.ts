@@ -265,6 +265,35 @@ function createResolveMaterial(): ShaderMaterial {
         );
       }
 
+      float Luminance(vec3 color) {
+        return dot(color, vec3(0.25, 0.5, 0.25));
+      }
+
+      vec3 ToneMapSimple(vec3 color) {
+        vec3 safeColor = max(color, vec3(0.0));
+        return safeColor / (1.0 + Luminance(safeColor));
+      }
+
+      vec3 UnToneMapSimple(vec3 color) {
+        float denom = max(1.0 - Luminance(color), 1e-4);
+        return max(color, vec3(0.0)) / denom;
+      }
+
+      vec3 ClipAABBToCenter(vec3 historyColor, vec3 cMin, vec3 cMax) {
+        vec3 pClip = 0.5 * (cMax + cMin);
+        vec3 eClip = max(0.5 * (cMax - cMin), vec3(1e-4));
+        vec3 vClip = historyColor - pClip;
+        vec3 vUnit = vClip / eClip;
+        vec3 aUnit = abs(vUnit);
+        float maUnit = max(aUnit.x, max(aUnit.y, aUnit.z));
+
+        if (maUnit > 1.0) {
+          return pClip + vClip / maUnit;
+        }
+
+        return historyColor;
+      }
+
       void main() {
         vec3 currentColor = texture2D(tColor, vUv).rgb;
 
@@ -287,6 +316,8 @@ function createResolveMaterial(): ShaderMaterial {
         }
 
         vec3 historyColor = texture2D(tHistory, historyUV).rgb;
+        vec3 currentTonemappedYCoCg = RGBtoYCoCg(ToneMapSimple(currentColor));
+        vec3 historyTonemappedYCoCg = RGBtoYCoCg(ToneMapSimple(historyColor));
 
         vec3 m1 = vec3(0.0);
         vec3 m2 = vec3(0.0);
@@ -294,7 +325,7 @@ function createResolveMaterial(): ShaderMaterial {
         for (int x = -1; x <= 1; x++) {
           for (int y = -1; y <= 1; y++) {
             vec2 sUV = vUv + vec2(float(x), float(y)) * uInvTexSize;
-            vec3 c = RGBtoYCoCg(texture2D(tColor, sUV).rgb);
+            vec3 c = RGBtoYCoCg(ToneMapSimple(texture2D(tColor, sUV).rgb));
             m1 += c;
             m2 += c * c;
           }
@@ -307,16 +338,17 @@ function createResolveMaterial(): ShaderMaterial {
         vec3 cMin = mu - uClipGamma * sigma;
         vec3 cMax = mu + uClipGamma * sigma;
 
-        vec3 center = RGBtoYCoCg(currentColor);
+        vec3 center = currentTonemappedYCoCg;
         float chromaExtent = 0.125 * (cMax.x - cMin.x);
         cMin.yz = center.yz - chromaExtent;
         cMax.yz = center.yz + chromaExtent;
 
-        vec3 hYCoCg = clamp(RGBtoYCoCg(historyColor), cMin, cMax);
-        historyColor = YCoCgtoRGB(hYCoCg);
+        vec3 clippedHistoryTonemappedYCoCg = ClipAABBToCenter(historyTonemappedYCoCg, cMin, cMax);
+        historyColor = UnToneMapSimple(YCoCgtoRGB(clippedHistoryTonemappedYCoCg));
+        currentColor = UnToneMapSimple(YCoCgtoRGB(currentTonemappedYCoCg));
 
-        float lum0 = dot(currentColor, vec3(0.25, 0.5, 0.25));
-        float lum1 = dot(historyColor, vec3(0.25, 0.5, 0.25));
+        float lum0 = Luminance(currentColor);
+        float lum1 = Luminance(historyColor);
         float diff = abs(lum0 - lum1) / max(lum0, max(lum1, 0.2));
         float w = 1.0 - diff;
         float kFeedback = mix(1.0 - uBlendFactor * 2.0, 1.0 - uBlendFactor * 0.5, w * w);
