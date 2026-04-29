@@ -14,6 +14,7 @@ import {
   type Texture,
   type WebGLRenderer,
 } from 'three';
+import { Pass } from 'postprocessing';
 
 class VelocityMaterial extends ShaderMaterial {
   constructor() {
@@ -93,17 +94,23 @@ class VelocityMaterial extends ShaderMaterial {
   }
 }
 
-export class VelocityPass {
+export class VelocityPass extends Pass {
   private readonly prevViewProj = new Matrix4();
   private hasHistory = false;
   private readonly velocityMat = new VelocityMaterial();
   private rt: WebGLRenderTarget | null = null;
+
+  private depthTexture: DepthTexture | null = null;
+  private readonly invViewProj = new Matrix4();
+  private readonly currViewProj = new Matrix4();
 
   private readonly quad = new Mesh(new PlaneGeometry(2, 2), this.velocityMat);
   private readonly fsScene = new Scene();
   private readonly fsCam = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
   constructor() {
+    super('VelocityPass');
+    this.needsSwap = false;
     this.fsScene.add(this.quad);
   }
 
@@ -127,13 +134,25 @@ export class VelocityPass {
     this.prevViewProj.identity();
   }
 
-  render(renderer: WebGLRenderer, depthTexture: DepthTexture, invViewProj: Matrix4, currViewProj: Matrix4): void {
-    if (!this.rt) {
+  setFrameData(depthTexture: DepthTexture, invViewProj: Matrix4, currViewProj: Matrix4): void {
+    this.depthTexture = depthTexture;
+    this.invViewProj.copy(invViewProj);
+    this.currViewProj.copy(currViewProj);
+  }
+
+  render(
+    renderer: WebGLRenderer,
+    _inputBuffer: WebGLRenderTarget | null = null,
+    _outputBuffer: WebGLRenderTarget | null = null,
+    _deltaTime?: number,
+    _stencilTest?: boolean,
+  ): void {
+    if (!this.rt || !this.depthTexture) {
       return;
     }
 
-    this.velocityMat.uniforms.tDepth.value = depthTexture;
-    (this.velocityMat.uniforms.uInvViewProj.value as Matrix4).copy(invViewProj);
+    this.velocityMat.uniforms.tDepth.value = this.depthTexture;
+    (this.velocityMat.uniforms.uInvViewProj.value as Matrix4).copy(this.invViewProj);
     (this.velocityMat.uniforms.uPrevViewProj.value as Matrix4).copy(this.prevViewProj);
     this.velocityMat.uniforms.uFirstFrame.value = this.hasHistory ? 0.0 : 1.0;
 
@@ -141,7 +160,7 @@ export class VelocityPass {
     renderer.clear(true, false, false);
     renderer.render(this.fsScene, this.fsCam);
 
-    this.prevViewProj.copy(currViewProj);
+    this.prevViewProj.copy(this.currViewProj);
     this.hasHistory = true;
   }
 }

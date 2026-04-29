@@ -1,4 +1,3 @@
-import { Pass } from 'postprocessing';
 import {
   DepthFormat,
   DepthTexture,
@@ -18,7 +17,8 @@ import {
   type Texture,
   type WebGLRenderer,
 } from 'three';
-import type { VelocityPass } from './velocity-pass';
+import { Pass } from 'postprocessing';
+import type { VelocityPass } from './VelocityPass';
 
 const G = 1.324717957244746;
 const A1 = 1.0 / G;
@@ -30,7 +30,7 @@ const R2 = Array.from({ length: 256 }, (_, n) => [
   (BASE + A2 * n) % 1 - 0.5,
 ]);
 
-export class TAAPass extends Pass {
+export class TemporalReprojectPass extends Pass {
   private readonly sceneRef: Scene;
   private readonly cameraRef: PerspectiveCamera;
   private readonly velocityPass: VelocityPass;
@@ -54,19 +54,25 @@ export class TAAPass extends Pass {
   private resolveTarget: WebGLRenderTarget | null = null;
 
   private readonly resolveMat = createResolveMaterial();
-  private readonly outputMat = createOutputMaterial();
+  private readonly copyMat = createCopyMaterial();
 
-  private readonly quad = new Mesh(new PlaneGeometry(2, 2), this.outputMat);
+  private readonly quad = new Mesh(new PlaneGeometry(2, 2), this.copyMat);
   private readonly fsScene = new Scene();
   private readonly fsCam = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
   constructor(scene: Scene, camera: PerspectiveCamera, velocityPass: VelocityPass) {
-    super('TAAPass');
+    super('TemporalReprojectPass');
+
     this.sceneRef = scene;
     this.cameraRef = camera;
     this.velocityPass = velocityPass;
 
+    this.needsSwap = false;
     this.fsScene.add(this.quad);
+  }
+
+  get texture(): Texture | null {
+    return this.resolveTarget?.texture ?? null;
   }
 
   setSize(width: number, height: number): void {
@@ -89,14 +95,15 @@ export class TAAPass extends Pass {
       depthTexture: depthTex,
     });
 
-    const histOpts = {
+    const historyOptions = {
       minFilter: LinearFilter,
       magFilter: LinearFilter,
       type: HalfFloatType,
     };
 
-    this.histA = new WebGLRenderTarget(width, height, histOpts);
-    this.histB = new WebGLRenderTarget(width, height, histOpts);
+    this.histA = new WebGLRenderTarget(width, height, historyOptions);
+    this.histB = new WebGLRenderTarget(width, height, historyOptions);
+
     this.resolveTarget = new WebGLRenderTarget(width, height, {
       minFilter: LinearFilter,
       magFilter: LinearFilter,
@@ -107,12 +114,18 @@ export class TAAPass extends Pass {
     this.frame = 0;
   }
 
-  resetHistory(): void {
+  reset(): void {
     this.frame = 0;
     this.velocityPass.reset();
   }
 
-  render(renderer: WebGLRenderer): void {
+  render(
+    renderer: WebGLRenderer,
+    _inputBuffer: WebGLRenderTarget | null = null,
+    _outputBuffer: WebGLRenderTarget | null = null,
+    _deltaTime?: number,
+    _stencilTest?: boolean,
+  ): void {
     if (!this.sceneTarget || !this.histA || !this.histB || !this.resolveTarget) {
       return;
     }
@@ -126,9 +139,8 @@ export class TAAPass extends Pass {
       renderer.clear(true, true, true);
       renderer.render(this.sceneRef, this.cameraRef);
 
-      this.outputMat.uniforms.tDiffuse.value = this.sceneTarget.texture;
-      this.outputMat.uniforms.uApplyGamma.value = 1.0;
-      this.blit(renderer, this.outputMat, null);
+      this.copyMat.uniforms.tDiffuse.value = this.sceneTarget.texture;
+      this.blit(renderer, this.copyMat, this.resolveTarget);
 
       this.frame += 1;
       return;
@@ -138,6 +150,7 @@ export class TAAPass extends Pass {
     this.invViewProj.copy(this.currViewProj).invert();
 
     this.applyJitter();
+
     renderer.setRenderTarget(this.sceneTarget);
     renderer.clear(true, true, true);
     renderer.render(this.sceneRef, this.cameraRef);
@@ -146,10 +159,12 @@ export class TAAPass extends Pass {
 
     const depthTexture = this.sceneTarget.depthTexture;
     if (!depthTexture) {
+      renderer.setRenderTarget(null);
       return;
     }
 
-    this.velocityPass.render(renderer, depthTexture, this.invViewProj, this.currViewProj);
+    this.velocityPass.setFrameData(depthTexture, this.invViewProj, this.currViewProj);
+    this.velocityPass.render(renderer, null, null);
 
     const uniforms = this.resolveMat.uniforms;
     uniforms.tColor.value = this.sceneTarget.texture;
@@ -165,16 +180,10 @@ export class TAAPass extends Pass {
 
     this.blit(renderer, this.resolveMat, this.resolveTarget);
 
-    this.outputMat.uniforms.tDiffuse.value = this.resolveTarget.texture;
-    this.outputMat.uniforms.uApplyGamma.value = 0.0;
-    this.blit(renderer, this.outputMat, this.histB);
+    this.copyMat.uniforms.tDiffuse.value = this.resolveTarget.texture;
+    this.blit(renderer, this.copyMat, this.histB);
 
     [this.histA, this.histB] = [this.histB, this.histA];
-
-    this.outputMat.uniforms.tDiffuse.value = this.resolveTarget.texture;
-    this.outputMat.uniforms.uApplyGamma.value = 1.0;
-    this.blit(renderer, this.outputMat, null);
-
     this.frame += 1;
   }
 
@@ -185,7 +194,7 @@ export class TAAPass extends Pass {
     this.histB?.dispose();
     this.resolveTarget?.dispose();
     this.resolveMat.dispose();
-    this.outputMat.dispose();
+    this.copyMat.dispose();
   }
 
   private applyJitter(): void {
@@ -294,6 +303,52 @@ function createResolveMaterial(): ShaderMaterial {
         return historyColor;
       }
 
+      vec4 BiCubicCatmullRom5Tap(sampler2D tex, vec2 P, vec2 invTexSize) {
+        vec2 Weight[3];
+        vec2 Sample[3];
+
+        vec2 UV = P / invTexSize;
+        vec2 tc = floor(UV - 0.5) + 0.5;
+        vec2 f = UV - tc;
+        vec2 f2 = f * f;
+        vec2 f3 = f2 * f;
+
+        vec2 w0 = f2 - 0.5 * (f3 + f);
+        vec2 w1 = 1.5 * f3 - 2.5 * f2 + vec2(1.0);
+        vec2 w3 = 0.5 * (f3 - f2);
+        vec2 w2 = vec2(1.0) - w0 - w1 - w3;
+
+        Weight[0] = w0;
+        Weight[1] = w1 + w2;
+        Weight[2] = w3;
+
+        Sample[0] = tc - vec2(1.0);
+        Sample[1] = tc + w2 / max(Weight[1], vec2(1e-6));
+        Sample[2] = tc + vec2(2.0);
+
+        Sample[0] *= invTexSize;
+        Sample[1] *= invTexSize;
+        Sample[2] *= invTexSize;
+
+        float sampleWeight[5];
+        sampleWeight[0] = Weight[1].x * Weight[0].y;
+        sampleWeight[1] = Weight[0].x * Weight[1].y;
+        sampleWeight[2] = Weight[1].x * Weight[1].y;
+        sampleWeight[3] = Weight[2].x * Weight[1].y;
+        sampleWeight[4] = Weight[1].x * Weight[2].y;
+
+        vec4 Ct = texture2D(tex, vec2(Sample[1].x, Sample[0].y)) * sampleWeight[0];
+        vec4 Cl = texture2D(tex, vec2(Sample[0].x, Sample[1].y)) * sampleWeight[1];
+        vec4 Cc = texture2D(tex, vec2(Sample[1].x, Sample[1].y)) * sampleWeight[2];
+        vec4 Cr = texture2D(tex, vec2(Sample[2].x, Sample[1].y)) * sampleWeight[3];
+        vec4 Cb = texture2D(tex, vec2(Sample[1].x, Sample[2].y)) * sampleWeight[4];
+
+        float weightSum = sampleWeight[0] + sampleWeight[1] + sampleWeight[2] + sampleWeight[3] + sampleWeight[4];
+        float weightMultiplier = 1.0 / max(weightSum, 1e-6);
+
+        return max((Ct + Cl + Cc + Cr + Cb) * weightMultiplier, vec4(0.0));
+      }
+
       void main() {
         vec3 currentColor = texture2D(tColor, vUv).rgb;
 
@@ -315,7 +370,7 @@ function createResolveMaterial(): ShaderMaterial {
           return;
         }
 
-        vec3 historyColor = texture2D(tHistory, historyUV).rgb;
+        vec3 historyColor = BiCubicCatmullRom5Tap(tHistory, historyUV, uInvTexSize).rgb;
         vec3 currentTonemappedYCoCg = RGBtoYCoCg(ToneMapSimple(currentColor));
         vec3 historyTonemappedYCoCg = RGBtoYCoCg(ToneMapSimple(historyColor));
 
@@ -366,14 +421,13 @@ function createResolveMaterial(): ShaderMaterial {
   });
 }
 
-function createOutputMaterial(): ShaderMaterial {
+function createCopyMaterial(): ShaderMaterial {
   return new ShaderMaterial({
     blending: NoBlending,
     depthWrite: false,
     depthTest: false,
     uniforms: {
       tDiffuse: { value: null as Texture | null },
-      uApplyGamma: { value: 0.0 },
     },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
@@ -384,15 +438,10 @@ function createOutputMaterial(): ShaderMaterial {
     `,
     fragmentShader: /* glsl */ `
       uniform sampler2D tDiffuse;
-      uniform float uApplyGamma;
       varying vec2 vUv;
 
       void main() {
-        vec3 color = texture2D(tDiffuse, vUv).rgb;
-        if (uApplyGamma > 0.5) {
-          color = pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
-        }
-        gl_FragColor = vec4(color, 1.0);
+        gl_FragColor = texture2D(tDiffuse, vUv);
       }
     `,
   });
