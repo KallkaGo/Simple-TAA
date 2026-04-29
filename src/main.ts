@@ -1,11 +1,11 @@
 import './style.css';
 import { LinearSRGBColorSpace, PerspectiveCamera, WebGLRenderer } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { EffectComposer } from 'postprocessing';
-import { TAAPass } from './taa-pipeline';
-import { VelocityPass } from './velocity-pass';
-import { buildTestScene } from './scene-builder';
-import { mountTaaUi } from './ui';
+import { EffectComposer, EffectPass } from 'postprocessing';
+import { TAAEffect } from './TAAEffect';
+import { VelocityPass } from './VelocityPass';
+import { buildTestScene } from './SceneBuilder';
+import { mountTaaUi } from './TaaUi';
 
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) {
@@ -36,45 +36,45 @@ controls.target.set(0, 0, 0);
 const { scene, group, cube1, cube2, sphere, torus, wireSphere } = buildTestScene();
 
 const velocityPass = new VelocityPass();
-const taaPass = new TAAPass(scene, camera, velocityPass);
+const taaEffect = new TAAEffect(scene, camera, velocityPass);
 
 const composer = new EffectComposer(renderer);
-composer.addPass(taaPass);
+composer.addPass(new EffectPass(camera, taaEffect));
 
 let autoRotate = true;
 let lastTime = performance.now();
 let frameCount = 0;
 
 ui.enableTAA.addEventListener('change', () => {
-  taaPass.taaEnabled = ui.enableTAA.checked;
-  taaPass.resetHistory();
+  taaEffect.taaEnabled = ui.enableTAA.checked;
+  taaEffect.resetHistory();
 });
 
 ui.blendFactor.addEventListener('input', () => {
-  taaPass.blendFactor = Number.parseFloat(ui.blendFactor.value);
-  ui.blendVal.textContent = taaPass.blendFactor.toFixed(2);
+  taaEffect.blendFactor = Number.parseFloat(ui.blendFactor.value);
+  ui.blendVal.textContent = taaEffect.blendFactor.toFixed(2);
 });
 
 ui.clipGamma.addEventListener('input', () => {
-  taaPass.clipGamma = Number.parseFloat(ui.clipGamma.value);
-  ui.clipVal.textContent = taaPass.clipGamma.toFixed(1);
+  taaEffect.clipGamma = Number.parseFloat(ui.clipGamma.value);
+  ui.clipVal.textContent = taaEffect.clipGamma.toFixed(1);
 });
 
 ui.jitterScale.addEventListener('input', () => {
-  taaPass.jitterScale = Number.parseFloat(ui.jitterScale.value);
-  ui.jitterVal.textContent = taaPass.jitterScale.toFixed(1);
+  taaEffect.jitterScale = Number.parseFloat(ui.jitterScale.value);
+  ui.jitterVal.textContent = taaEffect.jitterScale.toFixed(1);
 });
 
 ui.showVelocity.addEventListener('change', () => {
-  taaPass.showVelocity = ui.showVelocity.checked;
+  taaEffect.showVelocity = ui.showVelocity.checked;
 });
 
 ui.showDiff.addEventListener('change', () => {
-  taaPass.showDiff = ui.showDiff.checked;
+  taaEffect.showDiff = ui.showDiff.checked;
 });
 
 ui.resetHistory.addEventListener('click', () => {
-  taaPass.resetHistory();
+  taaEffect.resetHistory();
 });
 
 ui.toggleRotate.addEventListener('click', () => {

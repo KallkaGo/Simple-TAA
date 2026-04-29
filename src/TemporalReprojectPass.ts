@@ -1,4 +1,3 @@
-import { Pass } from 'postprocessing';
 import {
   DepthFormat,
   DepthTexture,
@@ -18,7 +17,8 @@ import {
   type Texture,
   type WebGLRenderer,
 } from 'three';
-import type { VelocityPass } from './velocity-pass';
+import { Pass } from 'postprocessing';
+import type { VelocityPass } from './VelocityPass';
 
 const G = 1.324717957244746;
 const A1 = 1.0 / G;
@@ -30,7 +30,7 @@ const R2 = Array.from({ length: 256 }, (_, n) => [
   (BASE + A2 * n) % 1 - 0.5,
 ]);
 
-export class TAAPass extends Pass {
+export class TemporalReprojectPass extends Pass {
   private readonly sceneRef: Scene;
   private readonly cameraRef: PerspectiveCamera;
   private readonly velocityPass: VelocityPass;
@@ -54,19 +54,25 @@ export class TAAPass extends Pass {
   private resolveTarget: WebGLRenderTarget | null = null;
 
   private readonly resolveMat = createResolveMaterial();
-  private readonly outputMat = createOutputMaterial();
+  private readonly copyMat = createCopyMaterial();
 
-  private readonly quad = new Mesh(new PlaneGeometry(2, 2), this.outputMat);
+  private readonly quad = new Mesh(new PlaneGeometry(2, 2), this.copyMat);
   private readonly fsScene = new Scene();
   private readonly fsCam = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
   constructor(scene: Scene, camera: PerspectiveCamera, velocityPass: VelocityPass) {
-    super('TAAPass');
+    super('TemporalReprojectPass');
+
     this.sceneRef = scene;
     this.cameraRef = camera;
     this.velocityPass = velocityPass;
 
+    this.needsSwap = false;
     this.fsScene.add(this.quad);
+  }
+
+  get texture(): Texture | null {
+    return this.resolveTarget?.texture ?? null;
   }
 
   setSize(width: number, height: number): void {
@@ -89,14 +95,15 @@ export class TAAPass extends Pass {
       depthTexture: depthTex,
     });
 
-    const histOpts = {
+    const historyOptions = {
       minFilter: LinearFilter,
       magFilter: LinearFilter,
       type: HalfFloatType,
     };
 
-    this.histA = new WebGLRenderTarget(width, height, histOpts);
-    this.histB = new WebGLRenderTarget(width, height, histOpts);
+    this.histA = new WebGLRenderTarget(width, height, historyOptions);
+    this.histB = new WebGLRenderTarget(width, height, historyOptions);
+
     this.resolveTarget = new WebGLRenderTarget(width, height, {
       minFilter: LinearFilter,
       magFilter: LinearFilter,
@@ -107,12 +114,18 @@ export class TAAPass extends Pass {
     this.frame = 0;
   }
 
-  resetHistory(): void {
+  reset(): void {
     this.frame = 0;
     this.velocityPass.reset();
   }
 
-  render(renderer: WebGLRenderer): void {
+  render(
+    renderer: WebGLRenderer,
+    _inputBuffer: WebGLRenderTarget | null = null,
+    _outputBuffer: WebGLRenderTarget | null = null,
+    _deltaTime?: number,
+    _stencilTest?: boolean,
+  ): void {
     if (!this.sceneTarget || !this.histA || !this.histB || !this.resolveTarget) {
       return;
     }
@@ -126,9 +139,8 @@ export class TAAPass extends Pass {
       renderer.clear(true, true, true);
       renderer.render(this.sceneRef, this.cameraRef);
 
-      this.outputMat.uniforms.tDiffuse.value = this.sceneTarget.texture;
-      this.outputMat.uniforms.uApplyGamma.value = 1.0;
-      this.blit(renderer, this.outputMat, null);
+      this.copyMat.uniforms.tDiffuse.value = this.sceneTarget.texture;
+      this.blit(renderer, this.copyMat, this.resolveTarget);
 
       this.frame += 1;
       return;
@@ -138,6 +150,7 @@ export class TAAPass extends Pass {
     this.invViewProj.copy(this.currViewProj).invert();
 
     this.applyJitter();
+
     renderer.setRenderTarget(this.sceneTarget);
     renderer.clear(true, true, true);
     renderer.render(this.sceneRef, this.cameraRef);
@@ -146,10 +159,12 @@ export class TAAPass extends Pass {
 
     const depthTexture = this.sceneTarget.depthTexture;
     if (!depthTexture) {
+      renderer.setRenderTarget(null);
       return;
     }
 
-    this.velocityPass.render(renderer, depthTexture, this.invViewProj, this.currViewProj);
+    this.velocityPass.setFrameData(depthTexture, this.invViewProj, this.currViewProj);
+    this.velocityPass.render(renderer, null, null);
 
     const uniforms = this.resolveMat.uniforms;
     uniforms.tColor.value = this.sceneTarget.texture;
@@ -165,16 +180,10 @@ export class TAAPass extends Pass {
 
     this.blit(renderer, this.resolveMat, this.resolveTarget);
 
-    this.outputMat.uniforms.tDiffuse.value = this.resolveTarget.texture;
-    this.outputMat.uniforms.uApplyGamma.value = 0.0;
-    this.blit(renderer, this.outputMat, this.histB);
+    this.copyMat.uniforms.tDiffuse.value = this.resolveTarget.texture;
+    this.blit(renderer, this.copyMat, this.histB);
 
     [this.histA, this.histB] = [this.histB, this.histA];
-
-    this.outputMat.uniforms.tDiffuse.value = this.resolveTarget.texture;
-    this.outputMat.uniforms.uApplyGamma.value = 1.0;
-    this.blit(renderer, this.outputMat, null);
-
     this.frame += 1;
   }
 
@@ -185,7 +194,7 @@ export class TAAPass extends Pass {
     this.histB?.dispose();
     this.resolveTarget?.dispose();
     this.resolveMat.dispose();
-    this.outputMat.dispose();
+    this.copyMat.dispose();
   }
 
   private applyJitter(): void {
@@ -366,14 +375,13 @@ function createResolveMaterial(): ShaderMaterial {
   });
 }
 
-function createOutputMaterial(): ShaderMaterial {
+function createCopyMaterial(): ShaderMaterial {
   return new ShaderMaterial({
     blending: NoBlending,
     depthWrite: false,
     depthTest: false,
     uniforms: {
       tDiffuse: { value: null as Texture | null },
-      uApplyGamma: { value: 0.0 },
     },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
@@ -384,15 +392,10 @@ function createOutputMaterial(): ShaderMaterial {
     `,
     fragmentShader: /* glsl */ `
       uniform sampler2D tDiffuse;
-      uniform float uApplyGamma;
       varying vec2 vUv;
 
       void main() {
-        vec3 color = texture2D(tDiffuse, vUv).rgb;
-        if (uApplyGamma > 0.5) {
-          color = pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
-        }
-        gl_FragColor = vec4(color, 1.0);
+        gl_FragColor = texture2D(tDiffuse, vUv);
       }
     `,
   });
