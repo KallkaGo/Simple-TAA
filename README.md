@@ -245,13 +245,20 @@ vec3 cMax = mu + uClipGamma * sigma;
 vec3 clippedHistoryTonemappedYCoCg = ClipAABBToCenter(historyTonemappedYCoCg, cMin, cMax);
 ```
 
-这段是抗鬼影关键：
 
-- 用当前帧邻域统计均值 `mu`、方差 `sigma`。
-- 构建可接受颜色范围 `[cMin, cMax]`。
-- 把 history 颜色裁剪回这个范围。
+在做统计裁剪前，shader 还做了两步颜色预处理：
 
-`uClipGamma` 越小，裁剪越严格，拖影更少，但历史稳定性也会下降。
+- 先做 `ToneMapSimple`，把过亮值压缩到更稳定的范围，降低高亮像素对均值/方差的干扰。
+- 再做 `RGB -> YCoCg`，把亮度（Y）和色度（Co/Cg）拆开，裁剪时可以对亮度和色度分别处理。
+
+`YCoCg` 可以理解为一种便于做时域稳定处理的颜色空间：
+
+- `Y` 近似亮度分量，最影响闪烁感；
+- `Co/Cg` 是色差信息，通常变化幅度比亮度小。
+
+本项目在裁剪时会额外收紧色度范围（`cMin.yz / cMax.yz` 按 `chromaExtent` 限制），这样做的目的，是避免历史颜色在色彩方向漂得太远，减少彩边和色偏鬼影。
+
+裁剪结束后，再通过 `YCoCg -> RGB` 和 `UnToneMapSimple` 回到用于最终混合的颜色空间。
 
 ```glsl
 float diff = abs(lum0 - lum1) / max(lum0, max(lum1, 0.2));
