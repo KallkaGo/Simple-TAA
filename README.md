@@ -335,14 +335,14 @@ reset(): void {
 ```mermaid
 flowchart TD
     A[Scene + Camera] --> B[apply jitter]
-    B --> C[render scene to sceneTarget color + depth]
+    B --> C[render scene to sceneTarget <br/> color + depth]
     C --> D[clear jitter]
-    D --> E[VelocityPass: depth + invVP + prevVP to velocityTex]
-    E --> F[Resolve: current + historyA + velocity + depth]
-    F --> G[CatmullRom + VarianceClip + Feedback]
+    D --> E[VelocityPass]
+    E --> F[Resolve]
+    F --> G[CatmullRom + VarianceClip <br/> + Feedback]
     G --> H[resolveTarget to historyB]
     H --> I[swap historyA/historyB, frame++]
-    I --> J[TAAEffect mainImage: accumulatedTexture to gamma to screen]
+    I --> J[TAAEffect mainImage]
 ```
 
 ```text
