@@ -336,18 +336,20 @@ reset(): void {
 flowchart TD
     A[Scene + Camera] --> B[apply jitter]
     B --> C[render scene to sceneTarget color + depth]
-    C --> D[VelocityPass: depth + invVP + prevVP to velocityTex]
-    D --> E[Resolve: current + historyA + velocity + depth]
-    E --> F[CatmullRom + VarianceClip + Feedback]
-    F --> G[resolveTarget to historyB]
-    G --> H[swap historyA/historyB, frame++]
-    H --> I[TAAEffect mainImage: accumulatedTexture to gamma to screen]
+    C --> D[clear jitter]
+    D --> E[VelocityPass: depth + invVP + prevVP to velocityTex]
+    E --> F[Resolve: current + historyA + velocity + depth]
+    F --> G[CatmullRom + VarianceClip + Feedback]
+    G --> H[resolveTarget to historyB]
+    H --> I[swap historyA/historyB, frame++]
+    I --> J[TAAEffect mainImage: accumulatedTexture to gamma to screen]
 ```
 
 ```text
 Scene + Camera
   ├─ apply jitter
   ├─ render current color+depth -> sceneTarget
+  ├─ clear jitter
   ├─ depth + matrix -> VelocityPass -> velocityTex
   ├─ Resolve(current, historyA, velocity, depth)
   │    └─ CatmullRom + VarianceClip + Feedback
